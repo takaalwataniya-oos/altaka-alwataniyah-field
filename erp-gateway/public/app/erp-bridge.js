@@ -221,4 +221,214 @@
       fetch(a.href).then(function (r) { return r.blob(); }).then(function (b) { nativeSave(b, a.getAttribute('download') || 'file', false); });
     }, true);
   }
+
+  /* ---------- 6) الطباعة: زر «طباعة» في كل صفحة + معاينة طباعة داخل البرنامج ----------
+     - برنامج ويندوز/ماك كان يرفض النافذة الفارغة التي تفتحها منظومة ERP للطباعة (window.open('')) ← لا تظهر نافذة الطباعة.
+       الآن تُعرض الكتب والمستندات في «معاينة الطباعة» داخل البرنامج نفسه، ومنها الطباعة أو الحفظ PDF.
+     - زر «طباعة» عائم في كل صفحات ERP (وCtrl+P): يطبع الصفحة الحالية (أو النافذة المنبثقة المفتوحة) على ورق الشركة الرسمي.
+     - أندرويد: نظام التطبيق لا يدعم الطباعة ← يُفتح المستند في المتصفح/التطبيق المناسب للطباعة أو الحفظ PDF. */
+  var IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var ANDROID = !!(AB && (AB.shareFile || AB.saveFile));
+  var pv = null;
+  function pvOpen() { return !!(pv && !pv.classList.contains('ne-hide')); }
+  function prev() {
+    if (pv) return pv;
+    pv = document.createElement('div'); pv.id = 'ne-pv'; pv.className = 'ne-hide';
+    pv.innerHTML = '<div class="ne-pvbar"><button type="button" data-a="close">→ رجوع</button><b id="ne-pvt">معاينة الطباعة</b><span class="ne-pvsp"></span>' +
+      '<button type="button" data-a="land" title="تبديل اتجاه الورقة">⇄ <span>أفقي / عمودي</span></button>' +
+      '<button type="button" class="pri" data-a="print" title="لحفظ المستند PDF اختر «حفظ بصيغة PDF» في نافذة الطباعة">🖨 <span>' + (ANDROID ? 'فتح للطباعة / PDF' : 'طباعة / PDF') + '</span></button></div>' +
+      '<iframe id="ne-pvf" title="معاينة الطباعة"></iframe>';
+    document.body.appendChild(pv);
+    pv.addEventListener('click', function (ev) {
+      var b = ev.target.closest && ev.target.closest('button[data-a]'); if (!b) return;
+      var a = b.getAttribute('data-a');
+      if (a === 'close') closePv(); else if (a === 'print') doPrint(); else if (a === 'land') toggleLand();
+    });
+    return pv;
+  }
+  function frame() { return prev().querySelector('#ne-pvf'); }
+  function openPv(title) {
+    prev(); pv.querySelector('#ne-pvt').textContent = title || 'معاينة الطباعة';
+    pv.classList.remove('ne-hide'); document.documentElement.classList.add('ne-pv-open');
+  }
+  function closePv() { if (pv) { pv.classList.add('ne-hide'); document.documentElement.classList.remove('ne-pv-open'); } }
+  function freshFrame() {
+    prev(); var old = frame(), f = document.createElement('iframe'); f.id = 'ne-pvf'; f.title = 'معاينة الطباعة';
+    old.parentNode.replaceChild(f, old);
+    var w = f.contentWindow; f.__nativePrint = w.print.bind(w); arm(w);
+    return w;
+  }
+  // window.close() داخل المستند يغلق المعاينة، وwindow.print() على أندرويد يفتحه للطباعة
+  function arm(w) { try { w.close = closePv; if (ANDROID) w.print = doPrint; } catch (e) {} }
+  function polish(w) {
+    try {
+      arm(w); var d = w.document;
+      if (d && d.documentElement && !d.getElementById('ne-pvcss')) {
+        var s = d.createElement('style'); s.id = 'ne-pvcss'; s.textContent = '@media screen{.toolbar{display:none!important}}';
+        (d.head || d.documentElement).appendChild(s);
+      }
+      if (d && d.title && pv) pv.querySelector('#ne-pvt').textContent = d.title;
+    } catch (e) {}
+  }
+  var AUTO_PRINT = /<script>window\.onload=function\(\)\{setTimeout\(function\(\)\{window\.print\(\)\},\d+\)\}<\/script>/;
+  function showHtml(html, title, auto) {
+    var w = freshFrame(); openPv(title);
+    html = String(html || '');
+    if (AUTO_PRINT.test(html)) { html = html.replace(AUTO_PRINT, ''); auto = true; }
+    w.document.open(); w.document.write(html); w.document.close(); polish(w);
+    if (auto) setTimeout(doPrint, 700);
+    return w;
+  }
+  function fileName(t) { return String(t || 'مستند').replace(/[\\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'مستند'; }
+  function shareHtml(html, title) {
+    b64(new Blob([html], { type: 'text/html' }), function (x) {
+      var n = fileName(title) + '.html';
+      var out = AB.shareFile ? AB.shareFile(x, n, 'text/html') : AB.saveFile(x, n, 'text/html');
+      if (String(out).indexOf('ok') !== 0) alert(out || 'تعذّر فتح المستند للطباعة');
+    });
+  }
+  function doPrint() {
+    var f = frame(), w = f.contentWindow, d = w.document;
+    if (ANDROID || IOS) {
+      var html = '<!doctype html>' + d.documentElement.outerHTML;
+      if (ANDROID) return shareHtml(html.replace('</body>', '<script>setTimeout(function(){print()},700)<\/script></body>'), d.title);
+      var u = URL.createObjectURL(new Blob([html.replace('</body>', '<script>setTimeout(function(){print()},600)<\/script></body>')], { type: 'text/html' }));
+      if (window.open(u, '_blank')) return;
+    }
+    try { w.focus(); (f.__nativePrint || w.print).call(w); } catch (e) { alert('تعذّرت الطباعة: ' + e.message); }
+  }
+  function toggleLand() {
+    try {
+      var d = frame().contentWindow.document, sh = d.querySelector('.sheet'), old = d.getElementById('ne-land');
+      var land = old ? old.getAttribute('data-l') === '1' : !!(sh && sh.classList.contains('land'));
+      if (old) old.remove();
+      var s = d.createElement('style'); s.id = 'ne-land'; s.setAttribute('data-l', land ? '0' : '1');
+      s.textContent = '@page{size:A4 ' + (land ? 'portrait' : 'landscape') + '}'; d.head.appendChild(s);
+      if (sh) sh.classList.toggle('land', !land);
+    } catch (e) {}
+  }
+
+  // نوافذ الطباعة الفارغة (window.open('')) ← معاينة الطباعة داخل البرنامج
+  function shimWin(win) {
+    try {
+      if (!win || win.__nePrintShim) return;
+      var orig = win.open;
+      win.open = function (u) {
+        if (!u || u === 'about:blank') {
+          var w = freshFrame(); openPv('معاينة الطباعة');
+          [250, 900, 2000].forEach(function (t) { setTimeout(function () { polish(w); }, t); });
+          return w;
+        }
+        return orig.apply(win, arguments);
+      };
+      if (ANDROID) win.print = function () { snapshotPrint(win); };
+      win.__nePrintShim = true;
+    } catch (e) {}
+  }
+  // أندرويد: الطباعة المدمجة في الصفحة (تقارير الحضور، السجلات…) ← نسخة من الصفحة تُفتح للطباعة
+  function snapshotPrint(win) {
+    try {
+      var d = win.document, c = d.documentElement.cloneNode(true);
+      [].forEach.call(c.querySelectorAll('script,#ne-pv,#ne-field,#ne-print,#ne-shade,#ne-menu'), function (x) { x.remove(); });
+      var head = c.querySelector('head'); if (head) { var bs = d.createElement('base'); bs.href = win.location.origin + '/'; head.insertBefore(bs, head.firstChild); }
+      shareHtml('<!doctype html>' + c.outerHTML.replace('</body>', '<script>setTimeout(function(){print()},700)<\/script></body>'), d.title);
+    } catch (e) {}
+    setTimeout(function () { try { win.dispatchEvent(new Event('afterprint')); } catch (e) {} }, 300);
+  }
+  shimWin(window);
+  function shimFrames() {
+    [].forEach.call(document.querySelectorAll('iframe'), function (f) {
+      if (f.id === 'ne-pvf' || f.id === 'ne-fframe') return;
+      if (!f.__neL) { f.__neL = 1; f.addEventListener('load', function () { try { shimWin(f.contentWindow); } catch (e) {} }); }
+      try { if (f.contentWindow && f.contentWindow.location.origin === location.origin) shimWin(f.contentWindow); } catch (e) {}
+    });
+  }
+
+  // الكتب الرسمية ومستندات ورق الشركة (brand.js)
+  function hookBrand() {
+    if (!window.NEPrint || window.NEPrint.__ne) return;
+    window.NEPrint.open = function (html) { return showHtml(html); };
+    window.nePrintLetter = function (L, opt) { return showHtml(window.NEPrint.letterHtml(L, opt), null, !!(opt && opt.official)); };
+    window.NEPrint.__ne = true;
+  }
+  hookBrand();
+
+  // طباعة الصفحة الحالية على ورق الشركة
+  function visible(el) { var r = el.getBoundingClientRect(); return r.width > 40 && r.height > 40 && getComputedStyle(el).visibility !== 'hidden'; }
+  function printScope() {
+    var docs = [document], hf = document.querySelector('iframe.ne-hr-frame, .ne-hr-frame iframe');
+    try { if (hf && hf.contentDocument && hf.contentDocument.body) docs.unshift(hf.contentDocument); } catch (e) {}
+    // نافذة منبثقة مفتوحة ← تُطبع هي
+    var dlg = [].slice.call(document.querySelectorAll('#root [role="dialog"], #root .fixed.inset-0')).filter(visible).pop();
+    if (dlg && dlg.textContent.trim().length > 20) return { el: dlg, doc: document };
+    if (docs[0] !== document) {
+      var hd = docs[0], d2 = [].slice.call(hd.querySelectorAll('[role="dialog"], .modal.show, .modal.open, .fixed.inset-0')).filter(function (x) { return x.offsetHeight > 40; }).pop();
+      return { el: d2 || hd.querySelector('main') || hd.body, doc: hd };
+    }
+    return { el: document.querySelector('#root main') || document.getElementById('root') || document.body, doc: document };
+  }
+  function cleanClone(src) {
+    var c = src.cloneNode(true);
+    var si = src.querySelectorAll('input,select,textarea'), ci = c.querySelectorAll('input,select,textarea');
+    for (var i = 0; i < ci.length; i++) {
+      var s = si[i], el = ci[i], t = (el.type || '').toLowerCase(), v;
+      if (t === 'hidden' || t === 'file' || t === 'password' || t === 'search') { el.remove(); continue; }
+      if (el.tagName === 'SELECT') v = s.selectedIndex >= 0 && s.options[s.selectedIndex] ? s.options[s.selectedIndex].text : '';
+      else if (t === 'checkbox' || t === 'radio') v = s.checked ? '☑' : '☐';
+      else v = s.value;
+      var sp = document.createElement('span'); sp.className = 'ne-fv'; sp.textContent = v || '—'; el.parentNode.replaceChild(sp, el);
+    }
+    var sc = src.querySelectorAll('canvas'), cc = c.querySelectorAll('canvas');
+    for (var k = 0; k < cc.length; k++) { try { var im = document.createElement('img'); im.src = sc[k].toDataURL('image/png'); cc[k].parentNode.replaceChild(im, cc[k]); } catch (e) { cc[k].remove(); } }
+    [].forEach.call(c.querySelectorAll('.no-print,nav,aside,iframe,video,audio,script,style,link,#ne-print,[aria-hidden="true"]:not(svg)'), function (x) { x.remove(); });
+    // أزرار الإجراءات تُحذف، والأزرار التي تحمل محتوى (صفوف، بطاقات) تتحول إلى نص
+    [].forEach.call(c.querySelectorAll('button,[role="button"]'), function (b) {
+      if (b.textContent.trim().length > 40 || b.querySelector('div,table,p')) { var d = document.createElement('div'); while (b.firstChild) d.appendChild(b.firstChild); b.parentNode.replaceChild(d, b); }
+      else b.remove();
+    });
+    [].forEach.call(c.querySelectorAll('*'), function (x) { x.removeAttribute('class'); x.removeAttribute('style'); x.removeAttribute('id'); });
+    return c;
+  }
+  var GEN_CSS = '.content{font-size:12.5px;line-height:1.8}.content h1{font-size:18px;margin:4px 0 10px}.content h2{font-size:15.5px;margin:12px 0 6px}.content h3{font-size:14px;margin:10px 0 4px}' +
+    '.content table{width:100%;border-collapse:collapse;margin:8px 0;font-size:11.5px}.content th,.content td{border:1px solid #cfdad4;padding:5px 7px;text-align:right;vertical-align:top}' +
+    '.content th{background:#eef4f0;font-weight:700}.content tr{page-break-inside:avoid}.content svg{width:15px;height:15px;vertical-align:middle}.content img{max-width:100%}' +
+    '.content .ne-fv{font-weight:600}.content label{font-weight:600;color:#355a4f}.content p{margin:4px 0}';
+  function printPage() {
+    var sc = printScope(), el = sc.el; if (!el) return;
+    var h = el.querySelector('h1, h2, h3'), title = (h && h.textContent.trim()) || document.title || 'صفحة';
+    var body = cleanClone(el), wide = [].some.call(body.querySelectorAll('tr'), function (r) { return r.children.length > 7; });
+    var html = window.NEPrint && window.NEPrint.report
+      ? window.NEPrint.report({ title: title, eyebrow: 'منظومة ERP', by: NE.me && (NE.me.fullName || NE.me.name || NE.me.username) || '', body: body.innerHTML, css: GEN_CSS, landscape: wide })
+      : '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>' + title + '</title><style>body{font-family:system-ui,sans-serif;padding:24px}' + GEN_CSS + '</style></head><body><div class="content">' + body.innerHTML + '</div></body></html>';
+    showHtml(html, title);
+  }
+  window.nePrintPage = printPage;
+  window.nePrintPreview = function (html, title) { return showHtml(html, title); };
+
+  function printBtn() {
+    var b = document.getElementById('ne-print');
+    if (!b) {
+      b = document.createElement('button'); b.id = 'ne-print'; b.type = 'button'; b.title = 'طباعة هذه الصفحة (Ctrl+P)';
+      b.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg><span>طباعة</span>';
+      b.onclick = printPage; document.body.appendChild(b);
+    }
+    b.classList.toggle('ne-hide', isOpen());
+  }
+  document.addEventListener('keydown', function (ev) {
+    if (pvOpen() && ev.key === 'Escape') { ev.preventDefault(); closePv(); return; }
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && (ev.key === 'p' || ev.key === 'P' || ev.key === 'ح')) {
+      if (pvOpen()) { ev.preventDefault(); doPrint(); }
+      else if (signedIn() && !isOpen()) { ev.preventDefault(); printPage(); }
+    }
+  }, true);
+  var backPrev = window.appBack;
+  window.appBack = function () { if (pvOpen()) { closePv(); return true; } return backPrev(); };
+
+  var renderPrev = render;
+  render = function () {
+    renderPrev(); hookBrand(); shimFrames();
+    var on = signedIn(), b = document.getElementById('ne-print');
+    if (on) printBtn(); else { if (b) b.remove(); closePv(); }
+  };
+  render();
 })();
