@@ -4,7 +4,7 @@
 param([switch]$Force, [switch]$NoRestart, [string]$Root = 'C:\ALTAKA-ALWATANIYAH')
 $ErrorActionPreference = 'Stop'
 $Up = Join-Path $Root 'updater'
-$Repo = 'engsaifhayder-oss/altaka-alwataniyah-field'
+$Repo = 'takaalwataniya-oos/altaka-alwataniyah-field'
 New-Item -ItemType Directory -Force $Up | Out-Null
 $Log = Join-Path $Up 'update.log'
 function L($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Add-Content -Encoding UTF8 $Log }
