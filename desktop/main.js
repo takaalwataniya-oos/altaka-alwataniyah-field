@@ -52,7 +52,7 @@ function createWindow() {
 /* ---------- التحديث التلقائي لبرنامج ويندوز (النسخة المثبّتة) ----------
    الواجهة والخصائص تصل من خادم الحاسبة الأم مباشرة، وهذا يحدّث غلاف البرنامج نفسه عند صدور إصدار جديد. */
 const fs = require('fs'), os = require('os'), https = require('https'), { spawn } = require('child_process');
-const REPO = 'engsaifhayder-oss/altaka-alwataniyah-field';
+const REPO = 'takaalwataniya-oos/altaka-alwataniyah-field';
 function builtAt() { try { return Date.parse(JSON.parse(fs.readFileSync(path.join(__dirname, 'build-info.json'), 'utf8')).built) || 0; } catch (_) { return 0; } }
 function get(url, file, n = 0) {
   return new Promise((res, rej) => {
