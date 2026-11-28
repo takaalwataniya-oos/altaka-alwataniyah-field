@@ -125,14 +125,37 @@ const fail = k => { const f = fails.get(k); fails.set(k, { n: f && Date.now() < 
 const SESSION_IDLE_H = 12;
 
 /* الأدوار والصلاحيات (يطبّقها الخادم) */
-const ROLES = {
-  admin: { t: 'مدير النظام', p: ['*'] },
-  accountant: { t: 'محاسب', p: ['gl', 'sales', 'purchases', 'store', 'projects', 'reports', 'void'] },
-  sales: { t: 'مبيعات', p: ['sales', 'projects', 'reports.sales'] },
-  purchases: { t: 'مشتريات', p: ['purchases', 'store', 'reports.store'] },
-  store: { t: 'أمين مخزن', p: ['store', 'reports.store'] },
-  viewer: { t: 'اطلاع على التقارير', p: ['reports'] }
+/* المهام (الصلاحيات) المتاحة لإسنادها إلى الأدوار */
+const PERMS = [
+  ['gl', 'القيود اليومية ودليل الحسابات والسندات'],
+  ['sales', 'عروض الأسعار وفواتير البيع والزبائن'],
+  ['purchases', 'فواتير الشراء والموردون'],
+  ['store', 'المواد والمخازن وحركات المخزن'],
+  ['projects', 'المشاريع ومراكز الكلفة'],
+  ['void', 'إلغاء المستندات'],
+  ['reports', 'كل التقارير'],
+  ['reports.sales', 'تقارير المبيعات والزبائن والمشاريع'],
+  ['reports.store', 'تقارير المخزون']
+];
+const PERM_KEYS = PERMS.map(x => x[0]);
+const DEFAULT_ROLES = {
+  admin: { t: 'مدير النظام', d: 'كل شيء، والإعدادات والمستخدمون وقفل الفترات', p: ['*'] },
+  accountant: { t: 'محاسب', d: 'كل العمليات المحاسبية والتقارير والإلغاء', p: ['gl', 'sales', 'purchases', 'store', 'projects', 'reports', 'void'] },
+  sales: { t: 'مبيعات', d: 'عروض الأسعار وفواتير البيع والزبائن والمشاريع وتقارير المبيعات', p: ['sales', 'projects', 'reports.sales'] },
+  purchases: { t: 'مشتريات', d: 'فواتير الشراء والموردون والمواد وتقارير المخزون', p: ['purchases', 'store', 'reports.store'] },
+  store: { t: 'أمين مخزن', d: 'المواد وحركات المخزن وتقارير المخزون', p: ['store', 'reports.store'] },
+  viewer: { t: 'اطلاع على التقارير', d: 'كل التقارير بدون أي تعديل', p: ['reports'] }
 };
+/* الأدوار تُحفظ في الإعدادات (roles_json) ويمكن تعديلها من نافذة المستخدمين والصلاحيات */
+const ROLES = {};
+function loadRoles() {
+  let saved = null; try { saved = JSON.parse(getSet('roles_json') || 'null'); } catch { saved = null; }
+  const src = saved && typeof saved === 'object' ? saved : DEFAULT_ROLES;
+  for (const k of Object.keys(ROLES)) delete ROLES[k];
+  for (const [k, v] of Object.entries(src)) ROLES[k] = { t: String(v.t || k), d: String(v.d || ''), p: Array.isArray(v.p) ? v.p.filter(x => PERM_KEYS.includes(x)) : [] };
+  ROLES.admin = { ...DEFAULT_ROLES.admin, d: (src.admin && src.admin.d) || DEFAULT_ROLES.admin.d }; /* المدير دائماً بكل الصلاحيات */
+}
+loadRoles();
 function can(u, p) {
   const ps = (ROLES[u.role] || {}).p || [];
   return ps.includes('*') || ps.includes(p) || (p.startsWith('reports.') && ps.includes('reports'));
@@ -699,6 +722,17 @@ route('POST', '/api/users', 'admin', async (req, u) => {
   const b = await readJson(req); if (!ROLES[b.role]) throw new Bad('الدور مطلوب');
   if (b.id) {
     if (Number(b.id) === u.id && (b.role !== 'admin' || b.active === false)) throw new Bad('لا يمكنك إزالة صلاحية المدير عن حسابك');
+    const old = one('SELECT username FROM users WHERE id=?', Number(b.id)); if (!old) throw new Bad('المستخدم غير موجود', 404);
+    if (b.username !== undefined) {
+      const un = String(b.username || '').trim();
+      if (!un) throw new Bad('اسم المستخدم مطلوب');
+      if (/\s/.test(un)) throw new Bad('اسم المستخدم بدون مسافات');
+      if (un !== old.username) {
+        if (one('SELECT 1 x FROM users WHERE username=? AND id<>?', un, Number(b.id))) throw new Bad('اسم المستخدم موجود');
+        run('UPDATE users SET username=? WHERE id=?', un, Number(b.id));
+        audit(u, 'rename', 'user', b.id, { from: old.username, to: un });
+      }
+    }
     run('UPDATE users SET name=?, role=?, active=? WHERE id=?', b.name || '', b.role, b.active === false ? 0 : 1, Number(b.id));
     if (b.password) { if (String(b.password).length < 8) throw new Bad('كلمة المرور 8 أحرف على الأقل'); run('UPDATE users SET pass_hash=? WHERE id=?', hashPass(b.password), Number(b.id)); run('DELETE FROM sessions WHERE user_id=?', Number(b.id)); }
     if (b.active === false) run('DELETE FROM sessions WHERE user_id=?', Number(b.id));
@@ -708,6 +742,38 @@ route('POST', '/api/users', 'admin', async (req, u) => {
     run('INSERT INTO users(username,name,role,pass_hash,created_at) VALUES(?,?,?,?,?)', String(b.username).trim(), b.name || '', b.role, hashPass(b.password), nowIso());
   }
   audit(u, 'save', 'user', b.id || b.username, { role: b.role, active: b.active }); return { ok: true };
+});
+/* الأدوار ومهامها: عرض وتعديل وإضافة وحذف (للمدير فقط) */
+const saveRoles = () => run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', 'roles_json', JSON.stringify(ROLES));
+route('GET', '/api/roles', 'admin', () => ({
+  perms: PERMS.map(([k, t]) => ({ k, t })),
+  roles: Object.entries(ROLES).map(([k, v]) => ({ k, t: v.t, d: v.d, p: v.p, locked: k === 'admin', users: (one('SELECT COUNT(*) n FROM users WHERE role=?', k) || {}).n || 0 }))
+}));
+route('POST', '/api/roles', 'admin', async (req, u) => {
+  const b = await readJson(req);
+  const t = String(b.t || '').trim(); if (!t) throw new Bad('اسم الدور مطلوب');
+  let k = String(b.k || '').trim();
+  if (!k) { k = 'role' + Date.now().toString(36); }
+  if (!/^[a-z][a-z0-9_]{1,30}$/i.test(k)) throw new Bad('رمز الدور غير صالح');
+  if (Object.entries(ROLES).some(([kk, v]) => kk !== k && v.t === t)) throw new Bad('يوجد دور بنفس الاسم');
+  if (k === 'admin') { ROLES.admin.d = String(b.d || ROLES.admin.d); saveRoles(); audit(u, 'update', 'role', k, { d: b.d }); return { ok: true, k }; }
+  const p = Array.isArray(b.p) ? [...new Set(b.p.filter(x => PERM_KEYS.includes(x)))] : [];
+  const isNew = !ROLES[k];
+  ROLES[k] = { t, d: String(b.d || '').trim(), p };
+  saveRoles(); audit(u, isNew ? 'create' : 'update', 'role', k, { t, p }); return { ok: true, k };
+});
+route('POST', '/api/roles/:k/delete', 'admin', async (req, u, url, pr) => {
+  const k = decodeURIComponent(pr.k);
+  if (!ROLES[k]) throw new Bad('الدور غير موجود', 404);
+  if (k === 'admin') throw new Bad('لا يمكن حذف دور مدير النظام');
+  const n = (one('SELECT COUNT(*) n FROM users WHERE role=?', k) || {}).n || 0;
+  if (n) throw new Bad(`لا يمكن حذف الدور لأنه مسند إلى ${n} مستخدم — غيّر دورهم أولاً`);
+  delete ROLES[k]; saveRoles(); audit(u, 'delete', 'role', k, {}); return { ok: true };
+});
+route('POST', '/api/roles/reset', 'admin', async (req, u) => {
+  const used = all('SELECT DISTINCT role FROM users').map(r => r.role).filter(r => !DEFAULT_ROLES[r]);
+  if (used.length) throw new Bad('توجد أدوار مضافة مسندة لمستخدمين، غيّر دورهم أولاً');
+  run('DELETE FROM settings WHERE key=?', 'roles_json'); loadRoles(); audit(u, 'reset', 'role', '*', {}); return { ok: true };
 });
 const SETTABLE = ['company_ar', 'company_en', 'company_address', 'company_phone', 'usd_rate', 'lock_date', 'invoice_terms', 'quote_terms'].concat(Object.keys({ acc_customers: 1, acc_suppliers: 1, acc_advances: 1, acc_cash_iqd: 1, acc_cash_usd: 1, acc_bank_iqd: 1, acc_bank_usd: 1, acc_sales: 1, acc_services: 1, acc_cogs: 1, acc_inventory: 1, acc_discount_allowed: 1, acc_discount_earned: 1, acc_tax: 1, acc_stock_loss: 1, acc_stock_gain: 1, acc_opening: 1, acc_purchases_service: 1 }));
 route('POST', '/api/settings', 'admin', async (req, u) => {
